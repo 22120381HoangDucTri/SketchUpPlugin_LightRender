@@ -87,6 +87,10 @@ module LightRenderer
   def self.original_materials
     @@original_materials
   end
+
+  def self.original_materials=(value)
+    @@original_materials = value
+  end
   
   def self.light_materials
     @@light_materials
@@ -101,7 +105,7 @@ module LightRenderer
   
   # Update render if active
   def self.update_render
-    return unless LightRenderer.is_rendering?
+    return unless @@is_rendering
     DirectionalRenderer.apply_lighting
   end
   
@@ -119,7 +123,7 @@ module LightRenderer
     
     def activate
       update_model_center
-      @cursor_id = UI.create_cursor(File.join(__dir__, "cursor_light.png"), 8, 8) rescue nil
+      @cursor_id = UI.create_cursor(File.join(__dir__, "cursor_light.skp"), 8, 8) rescue nil
       
       # Force initial draw
       view = Sketchup.active_model.active_view
@@ -127,9 +131,9 @@ module LightRenderer
       
       # Debug output
       puts "Light Control Tool activated!"
-      puts "Light position: #{@@light_position}"
-      puts "Model center: #{@@model_center}"
-      puts "Light size: #{@@light_size}"
+      puts "Light position: #{LightRenderer.light_position}"
+      puts "Model center: #{LightRenderer.model_center}"
+      puts "Light size: #{LightRenderer.light_size}"
       
       UI.messagebox("Light Control Tool activated!\n• Look for the yellow sun icon\n• Drag it to change light direction\n• Right-click for options\n• Press 'R' to toggle light rays")
     end
@@ -147,15 +151,15 @@ module LightRenderer
       model.active_entities.each do |entity|
         bounds.add(entity.bounds) if entity.respond_to?(:bounds)
       end
-      @@model_center = bounds.valid? ? bounds.center : Geom::Point3d.new(0, 0, 0)
+      LightRenderer.model_center = bounds.valid? ? bounds.center : Geom::Point3d.new(0, 0, 0)
     end
     
     def onKeyDown(key, repeat, flags, view)
       case key
       when 82, 114 # 'R' or 'r'
-        @@show_light_rays = !@@show_light_rays
+        LightRenderer.show_light_rays = !LightRenderer.show_light_rays?
         view.invalidate
-        status = @@show_light_rays ? "shown" : "hidden"
+        status = LightRenderer.show_light_rays ? "shown" : "hidden"
         view.tooltip = "Light rays #{status}"
       when 27 # Escape
         Sketchup.active_model.select_tool(nil)
@@ -166,10 +170,10 @@ module LightRenderer
       @ip.pick(view, x, y)
       
       # Check if mouse is near light object
-      screen_pos = view.screen_coords(@@light_position)
+      screen_pos = view.screen_coords(LightRenderer.light_position)
       mouse_distance = Math.sqrt((x - screen_pos.x)**2 + (y - screen_pos.y)**2)
       
-      if mouse_distance < @@light_size
+      if mouse_distance < LightRenderer.light_size
         view.tooltip = "Drag to move light source (Right-click for options)"
         UI.set_cursor(@cursor_id) if @cursor_id
       else
@@ -179,15 +183,16 @@ module LightRenderer
       
       # Update light position while dragging
       if @dragging && @ip.position
-        @@light_position = @ip.position + @drag_offset
+        LightRenderer.light_position = @ip.position + @drag_offset
         
         # Constrain to reasonable bounds
-        @@light_position.x = [[-1000, @@light_position.x].max, 1000].min
-        @@light_position.y = [[-1000, @@light_position.y].max, 1000].min
-        @@light_position.z = [[0, @@light_position.z].max, 1000].min
+        # [x, y, z]
+        LightRenderer.light_position = [[[-1000, LightRenderer.light_position.x].max, 1000].min, 
+                                       [[-1000, LightRenderer.light_position.y].max, 1000].min, 
+                                       [[0, LightRenderer.light_position.z].max, 1000].min]
         
         # Update render in real-time if enabled
-        LightRenderer.update_render if @@is_rendering
+        LightRenderer.update_render if LightRenderer.is_rendering?
       end
       
       view.invalidate
@@ -196,18 +201,20 @@ module LightRenderer
     def onLButtonDown(flags, x, y, view)
       @ip.pick(view, x, y)
       
-      screen_pos = view.screen_coords(@@light_position)
+      screen_pos = view.screen_coords(LightRenderer.light_position)
       mouse_distance = Math.sqrt((x - screen_pos.x)**2 + (y - screen_pos.y)**2)
       
-      if mouse_distance < @@light_size
+      if mouse_distance < LightRenderer.light_size
         @dragging = true
         @selected = true
         
         # Calculate drag offset for smooth dragging
-        if @ip.position
-          @drag_offset = @@light_position - @ip.position
-        end
-        
+        if @ip.position && @ip.position.is_a?(Geom::Point3d) && LightRenderer.light_position.is_a?(Geom::Point3d)
+          @drag_offset = LightRenderer.light_position - @ip.position
+        else
+          @drag_offset = Geom::Vector3d.new(0, 0, 0)
+        end 
+
         puts "Light source selected - drag to reposition"
       else
         @selected = false
@@ -216,7 +223,7 @@ module LightRenderer
     
     def onLButtonUp(flags, x, y, view)
       if @dragging
-        puts "Light position: #{@@light_position.to_a.map{|v| v.round(1)}}"
+        puts "Light position: #{LightRenderer.light_position.to_a.map{|v| v.round(1)}}"
         puts "Light direction: #{LightRenderer.calculate_light_direction.to_a.map{|v| v.round(3)}}"
       end
       
@@ -227,7 +234,7 @@ module LightRenderer
     def draw(view)
       begin
         # Draw light visualization based on mode
-        draw_light_rays(view) if @@show_light_rays
+        draw_light_rays(view) if LightRenderer.show_light_rays?
         draw_light_indicator(view)
         draw_info_text(view)
         
@@ -242,17 +249,21 @@ module LightRenderer
     
     def draw_light_indicator(view)
       # Simple light position indicator
-      view.drawing_color = [255, 255, 0]  # Yellow
+      view.drawing_color = [255, 255, 200]  # Yellow
       view.line_width = 4
       
+      # Ensure base point is a Point3d
+      base = LightRenderer.light_position
+      base = Geom::Point3d.new(*base) unless base.is_a?(Geom::Point3d)
+
       # Draw a simple diamond shape at light position
       size = 15
       diamond_points = [
-        @@light_position + Geom::Vector3d.new(size, 0, 0),
-        @@light_position + Geom::Vector3d.new(0, size, 0),
-        @@light_position + Geom::Vector3d.new(-size, 0, 0),
-        @@light_position + Geom::Vector3d.new(0, -size, 0),
-        @@light_position + Geom::Vector3d.new(size, 0, 0)  # Close the loop
+        base.offset(Geom::Vector3d.new(size, 0, 0)),
+        base.offset(Geom::Vector3d.new(0, size, 0)),
+        base.offset(Geom::Vector3d.new(-size, 0, 0)),
+        base.offset(Geom::Vector3d.new(0, -size, 0)),
+        base.offset(Geom::Vector3d.new(size, 0, 0))
       ]
       
       view.draw(GL_LINE_STRIP, diamond_points)
@@ -260,8 +271,8 @@ module LightRenderer
       # Draw vertical line to show light position clearly
       view.drawing_color = [255, 255, 0, 128]  # Semi-transparent yellow
       view.line_stipple = "."
-      ground_point = Geom::Point3d.new(@@light_position.x, @@light_position.y, 0)
-      view.draw(GL_LINES, [@@light_position, ground_point])
+      ground_point = Geom::Point3d.new(base.x, base.y, 0)
+      view.draw(GL_LINES, [base, ground_point])
       view.line_stipple = ""
       
       # Draw mode-specific visual cues
@@ -275,20 +286,20 @@ module LightRenderer
           view.draw(GL_LINES, [@ip.position, preview_pos])
           view.line_stipple = ""
         end
-        
+
       when :spherical
         # Draw orbit circle around model center
         view.drawing_color = [100, 255, 100, 80]  # Light green
         view.line_stipple = "."
         
-        current_distance = (@@light_position - @@model_center).length
+        current_distance = (LightRenderer.light_position - LightRenderer.model_center).length
         circle_points = []
         
         32.times do |i|
           angle = i * 2 * Math::PI / 32
-          x = @@model_center.x + Math.cos(angle) * current_distance
-          y = @@model_center.y + Math.sin(angle) * current_distance
-          z = @@model_center.z
+          x = LightRenderer.model_center.x + Math.cos(angle) * current_distance
+          y = LightRenderer.model_center.y + Math.sin(angle) * current_distance
+          z = LightRenderer.model_center.z
           circle_points << Geom::Point3d.new(x, y, z)
         end
         
@@ -298,19 +309,17 @@ module LightRenderer
     end
     
     def draw_light_rays(view)
-      return unless @@show_light_rays
-      
-      # Check if we have valid positions
-      return unless @@light_position && @@model_center
-      
+      return unless LightRenderer.show_light_rays?
+      return unless LightRenderer.light_position && LightRenderer.model_center
+
       view.line_width = 2
       view.drawing_color = [255, 255, 150]
       view.line_stipple = "-"
-      
-      # Main light ray
+
       begin
-        view.draw(GL_LINES, [@@light_position, @@model_center])
-        
+        # Main light ray
+        view.draw(GL_LINES, [LightRenderer.light_position, LightRenderer.model_center])
+
         # Additional rays for better visualization
         offsets = [
           Geom::Vector3d.new(15, 0, 0),
@@ -318,22 +327,22 @@ module LightRenderer
           Geom::Vector3d.new(0, 15, 0),
           Geom::Vector3d.new(0, -15, 0)
         ]
-        
+
         offsets.each do |offset|
-          start_pt = @@light_position + offset
-          end_pt = @@model_center + offset
+          start_pt = LightRenderer.light_position.offset(offset)
+          end_pt = LightRenderer.model_center.offset(offset)
           view.draw(GL_LINES, [start_pt, end_pt])
         end
       rescue => e
         puts "Error drawing light rays: #{e.message}"
       end
-      
+
       view.line_stipple = ""
     end
     
     def draw_info_text(view)
       light_dir = LightRenderer.calculate_light_direction
-      pos = @@light_position.to_a.map{|v| v.round(1)}
+      pos = LightRenderer.light_position.to_a.map{|v| v.round(1)}
       dir = light_dir.to_a.map{|v| v.round(3)}
       
       view.drawing_color = [255, 255, 255]
@@ -342,7 +351,7 @@ module LightRenderer
         "Light Control Mode: #{@positioning_mode.to_s.upcase}",
         "Position: [#{pos.join(', ')}]",
         "Direction: [#{dir.join(', ')}]",
-        "Intensity: #{@@light_intensity.round(2)}"
+        "Intensity: #{LightRenderer.light_intensity.round(2)}"
       ]
       
       case @positioning_mode
@@ -350,16 +359,16 @@ module LightRenderer
         info_lines << "Click anywhere to position light"
         info_lines << "Press 'N' for numeric input"
       when :spherical
-        distance = (@@light_position - @@model_center).length.round(1)
+        distance = (LightRenderer.light_position - LightRenderer.model_center).length.round(1)
         info_lines << "Distance: #{distance}"
         info_lines << "Drag to orbit, scroll to adjust distance"
       end
       
-      if @@is_rendering
+      if LightRenderer.is_rendering?
         info_lines << "Rendering: ACTIVE"
       end
       
-      if !@@show_light_rays
+      if !LightRenderer.show_light_rays?
         info_lines << "Light rays: HIDDEN (Press 'R')"
       end
       
@@ -381,6 +390,7 @@ module LightRenderer
         Sketchup.active_model.active_view.invalidate
       }
       
+      # incomplete
       menu.add_item("Numeric Input...") {
         show_numeric_positioning
       }
@@ -394,7 +404,7 @@ module LightRenderer
       menu.add_separator
       
       menu.add_item("Toggle Light Rays") {
-        @@show_light_rays = !@@show_light_rays
+        LightRenderer.show_light_rays = !LightRenderer.show_light_rays?
         Sketchup.active_model.active_view.invalidate
       }
       
@@ -403,31 +413,31 @@ module LightRenderer
       presets_menu = menu.add_submenu("Quick Positions")
       
       presets_menu.add_item("Above Model (Top Light)") {
-        @@light_position = @@model_center + Geom::Vector3d.new(0, 0, 150)
-        LightRenderer.update_render if @@is_rendering
+        LightRenderer.light_position = LightRenderer.model_center + Geom::Vector3d.new(0, 0, 150)
+        LightRenderer.update_render if LightRenderer.is_rendering?
         Sketchup.active_model.active_view.invalidate
       }
       
       presets_menu.add_item("Side Light (45°)") {
         offset = Geom::Vector3d.new(100, 100, 100)
-        @@light_position = @@model_center + offset
-        LightRenderer.update_render if @@is_rendering
+        LightRenderer.light_position = LightRenderer.model_center + offset
+        LightRenderer.update_render if LightRenderer.is_rendering?
         Sketchup.active_model.active_view.invalidate
       }
       
       presets_menu.add_item("Front Light") {
         bounds = Sketchup.active_model.bounds
         depth = bounds.depth
-        @@light_position = @@model_center + Geom::Vector3d.new(0, depth, 50)
-        LightRenderer.update_render if @@is_rendering
+        LightRenderer.light_position = LightRenderer.model_center + Geom::Vector3d.new(0, depth, 50)
+        LightRenderer.update_render if LightRenderer.is_rendering?
         Sketchup.active_model.active_view.invalidate
       }
       
       presets_menu.add_item("Back Light (Rim)") {
         bounds = Sketchup.active_model.bounds
         depth = bounds.depth
-        @@light_position = @@model_center + Geom::Vector3d.new(0, -depth, 80)
-        LightRenderer.update_render if @@is_rendering
+        LightRenderer.light_position = LightRenderer.model_center + Geom::Vector3d.new(0, -depth, 80)
+        LightRenderer.update_render if LightRenderer.is_rendering?
         Sketchup.active_model.active_view.invalidate
       }
     end
@@ -439,24 +449,26 @@ module LightRenderer
     
     def self.start_rendering
       store_original_materials
-      @@is_rendering = true
+      LightRenderer.is_rendering = true
       apply_lighting
       UI.messagebox("Rendering started! Light effects applied.\nDrag the sun to see real-time updates.")
     end
     
     def self.stop_rendering
-      @@is_rendering = false
+      LightRenderer.is_rendering = false
       restore_original_materials
       UI.messagebox("Rendering stopped! Original materials restored.")
     end
     
     def self.store_original_materials
-      @@original_materials.clear
+      LightRenderer.original_materials.clear
+      LightRenderer.original_materials = {}
+
       model = Sketchup.active_model
       
       model.active_entities.each do |entity|
         if entity.is_a?(Sketchup::Face)
-          @@original_materials[entity.object_id] = {
+          LightRenderer.original_materials[entity.object_id] = {
             front: entity.material,
             back: entity.back_material
           }
@@ -479,7 +491,7 @@ module LightRenderer
         # Restore original materials
         model.active_entities.each do |entity|
           if entity.is_a?(Sketchup::Face)
-            original = @@original_materials[entity.object_id]
+            original = LightRenderer.original_materials[entity.object_id]
             if original
               entity.material = original[:front]
               entity.back_material = original[:back]
@@ -534,13 +546,13 @@ module LightRenderer
       direct_light = [dot_product, 0].max
       
       # Combine direct and ambient lighting
-      total_light = (direct_light * @@light_intensity) + @@ambient_light
+      total_light = (direct_light * LightRenderer.light_intensity) + LightRenderer.ambient_light
       total_light = [total_light, 1.0].min  # Cap at 1.0
       
       # Apply light color influence
-      base_r = @@light_color.red * total_light
-      base_g = @@light_color.green * total_light  
-      base_b = @@light_color.blue * total_light
+      base_r = LightRenderer.light_color.red * total_light
+      base_g = LightRenderer.light_color.green * total_light  
+      base_b = LightRenderer.light_color.blue * total_light
       
       # Create new color with gamma correction
       gamma = 0.8
@@ -594,16 +606,16 @@ module LightRenderer
         [[input[3].to_i, 0].max, 255].min, 
         [[input[4].to_i, 0].max, 255].min
       )
-      @@light_size = [[input[5].to_i, 10].max, 50].min
+      LightRenderer.light_size = [[input[5].to_i, 10].max, 50].min
       
       # Update render if active
-      update_render if @@is_rendering
+      update_render if LightRenderer.is_rendering?
       Sketchup.active_model.active_view.invalidate
     end
   end
   
   def self.update_render
-    DirectionalRenderer.apply_lighting if @@is_rendering
+    DirectionalRenderer.apply_lighting if LightRenderer.is_rendering?
   end
   
   # Enhanced Menu Creation
@@ -693,4 +705,3 @@ module LightRenderer
     puts "📚 Check Plugins > Light Renderer > Help & Info for more details"
   end
 end
-

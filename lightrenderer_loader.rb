@@ -4,7 +4,7 @@ require 'extensions.rb'
 module LightRendererExtension
   module LRE
     unless file_loaded?(__FILE__)
-      ex = SketchupExtension.new('My Cube', 'LightRenderer/my_extension_file.rb')
+      ex = SketchupExtension.new('My Cube', 'LightRenderer/main.rb')
       ex.description = 'Render Light'
       ex.version     = '1.0.0'
       ex.copyright   = 'Tri & Tri 2025'
